@@ -22,6 +22,9 @@
 #include "ros2_api.h"
 #include "ldlidar_driver.h"
 
+#include <algorithm>
+#include <cstdint>
+
 void  ToLaserscanMessagePublish(ldlidar::Points2D& src, double lidar_spin_freq, LaserScanSetting& setting,
   rclcpp::Node::SharedPtr& node, rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr& lidarpub);
 
@@ -170,18 +173,29 @@ void  ToLaserscanMessagePublish(ldlidar::Points2D& src,  double lidar_spin_freq,
   // Calculate the number of scanning points
   if (lidar_spin_freq > 0) {
     sensor_msgs::msg::LaserScan output;
-    output.header.stamp = start_scan_time;
+    // Stamp the scan with the middle of its sweep, from the points' own receive times
+    // (GetSystemTimeStamp), not the publish time: that is up to a sweep plus a loop period
+    // (10 Hz) later, so a turning robot's scan lagged behind in TF. The rays are indexed by
+    // angle, not time, so time_increment stays 0: every ray at the stamp, within half a sweep.
+    uint64_t first_stamp = UINT64_MAX, last_stamp = 0;
+    for (const auto& point : src) {
+      if (point.stamp == 0) continue;
+      first_stamp = std::min(first_stamp, point.stamp);
+      last_stamp = std::max(last_stamp, point.stamp);
+    }
+    if (last_stamp != 0) {
+      output.header.stamp = rclcpp::Time(
+        static_cast<int64_t>(first_stamp + (last_stamp - first_stamp) / 2), RCL_ROS_TIME);
+    } else {
+      output.header.stamp = start_scan_time;
+    }
     output.header.frame_id = setting.frame_id;
     output.angle_min = angle_min;
     output.angle_max = angle_max;
     output.range_min = range_min;
     output.range_max = range_max;
     output.angle_increment = angle_increment;
-    if (beam_size <= 1) {
-      output.time_increment = 0;
-    } else {
-      output.time_increment = static_cast<float>(scan_time / (double)(beam_size - 1));
-    }
+    output.time_increment = 0;
     output.scan_time = scan_time;
     // First fill all the data with Nan
     output.ranges.assign(beam_size, std::numeric_limits<float>::quiet_NaN());
